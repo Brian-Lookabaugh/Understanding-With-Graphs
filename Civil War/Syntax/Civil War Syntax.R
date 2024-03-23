@@ -6,7 +6,11 @@ pacman::p_load(
   "dplyr", # Data Manipulation
   "stringr", # Working with Texts
   "ggplot2", # Visualization
+  "sf", # Creating Maps
+  "rnaturalearth", # Maps
+  "rnaturalearthdata", # Maps
   "peacesciencer", # Conflict Data
+  "countrycode", # Working with Country Codes
   "viridis", # Pretty Color Palettes
   "readxl", # Importing Excel Files
   install = FALSE
@@ -126,7 +130,8 @@ term <- term %>%
     type.territory = max(type.territory),
     type.government = max(type.government),
     type.both = max(type.both),
-    high.intensity = max(high.intensity)
+    high.intensity = max(high.intensity),
+    outcome = max(outcome)
   ) %>% 
   ungroup()
 
@@ -137,7 +142,12 @@ final <- merged %>%
   # Filter Variables
   select(-c("newlmtnest", "country_name")) %>%
   # Re-Code US Values to Civil War = 0
-  mutate(civ.war = ifelse(gwcode == 2, 0, civ.war))
+  mutate(civ.war = ifelse(gwcode == 2, 0, civ.war)) %>%
+  # Filter People's Republic of Yemen
+  filter(gwcode != 680) %>%
+  # Manually Re-Code UCDP Civil War Values for Yemen
+  mutate(civ.war = ifelse(gwcode == 678 & year %in% c(1994, 2009:2022), 1, civ.war),
+         civ.war = ifelse(gwcode == 678 & is.na(civ.war), 0, civ.war))
 
 # Remove Data Sets
 rm(conflict, ged, merged, states, term, ucdp, vdem, vdem.filtered)
@@ -182,6 +192,74 @@ final %>%
 ########## Graph 2: Map of Countries Who Have Had The Most Civil Wars ##########
 ################################################################################
 
+# Create a Count of Unique Civil Wars for Each Country
+final <- final %>%
+  group_by(gwcode) %>%
+  mutate(onset = ifelse(civ.war == 1 & lag(civ.war) == 0, 1, 0),
+         onset = if_else(row_number() == first(which(civ.war == 1)), 1, onset),
+         count.onset = cumsum(onset)) %>%
+  ungroup()
+
+# Load Map Data
+world.sf <- rnaturalearth::ne_countries(
+  scale = "medium",
+  returnclass = "sf"
+)
+
+# Rename Country IDs to Match
+world.sf <- world.sf %>%
+  mutate(iso_n3 = as.numeric(iso_n3)) %>%
+  mutate(gwcode = countrycode(sourcevar = iso_n3, origin = "iso3n", destination = "gwn"),
+         gwcode = ifelse(iso_n3 == 887, 678, gwcode),
+         gwcode = ifelse(brk_name == "Somaliland", 520, gwcode))
+
+# Merge Map Data with Final Data
+map.data <- final %>%
+  full_join(world.sf, by = c("gwcode")) %>%
+  # Drop Antarctica/Non-Existent Countries
+  filter(statename != "Antarctica") %>%
+  # Manually Add in Somaliland Civil Conflicts
+  mutate(count.onset = ifelse(brk_name == "Somaliland", 1, count.onset))
+
+map.data %>%
+  # Create the Map
+  ggplot() +
+  geom_sf(
+    aes(geometry = geometry, fill = count.onset),
+    color = "black",
+    size = .2,
+    na.rm = T) +
+  scale_fill_viridis_c(
+    option = "rocket",
+    direction = -1,
+    breaks = seq(0, 12, by = 2),  
+    labels = seq(0, 12, by = 2),  
+    na.value = "#fbf2e9"
+  ) +
+  labs(
+    title = "Number of Civil Conflicts From 1950 to 2020",
+    fill = "") +
+  # Not Using Forester Theme Here Because Maps Are Weird
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+    axis.text.y = element_blank(),  
+    axis.ticks.y = element_blank(), 
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    legend.position = "bottom",
+    legend.title = element_text(size = 8, vjust = 1),
+    legend.text = element_text(size = 6),
+    legend.key.height = unit(0.25, 'cm'),
+    legend.key.width = unit(1, 'cm'),
+    plot.margin = unit(c(-1, -0.7, -1, -0.7), "cm"),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) 
+
+# Remove Maps Data Because It is Large
+rm(map.data, world.sf)
+
 ################################################################################
 ############## Graph 3: Bar Chart of Duration of Current Conflicts #############
 ################################################################################
@@ -205,9 +283,10 @@ final %>%
          statename = ifelse(statename == "Turkey (Ottoman Empire)", "Turkey", statename),
          statename = ifelse(statename == "Myanmar (Burma)", "Myanmar", statename),
          statename = ifelse(statename == "Iran (Persia)", "Iran", statename),
-         statename = ifelse(statename == "Central African Republic", "CAR", statename)) %>%
-  # Create the Plot
+         statename = ifelse(statename == "Central African Republic", "CAR", statename),
+         statename = ifelse(statename == "Yemen (Arab Republic of Yemen)", "Yemen", statename)) %>%
   filter(year == 2020) %>%
+  # Create the Plot
   ggplot(aes(x = duration, y = reorder(factor(statename), duration), fill = duration)) +
   geom_col() +
   scale_x_continuous(breaks = seq(0, 50, by = 5)) +
@@ -216,46 +295,132 @@ final %>%
     x = "Years of Continuous Conflict",
     y = ""
   ) +
-  scale_fill_viridis(option = "mako", end = 0.8) +
+  scale_fill_viridis(option = "mako", end = 0.8, direction = -1) +
   theme.forester() +
   theme(legend.position = "none")
 
 ################################################################################
-############ Graph 4: Map of Deaths per capita for Current Conflicts ###########
+######### Graph 4: Bar Chart of Deaths per capita for Current Conflicts ########
 ################################################################################
 
-################################################################################
-########### Graph 5: Bar Chart of Conflict Intensity by Conflict Type ##########
-################################################################################
+final %>%
+  # Only Keep Countries With Civil Wars By 2020
+  filter(!is.na(civ.war)) %>%
+  group_by(gwcode) %>%
+  mutate(peace.fail = ifelse(row_number() == 1 & civ.war == 1, 1,
+                             ifelse(lag(civ.war == 0) & civ.war == 1, 1, 0))) %>%
+  ungroup() %>%
+  mutate(id = cumsum(peace.fail)) %>%
+  filter(civ.war == 1) %>%
+  group_by(id) %>%
+  mutate(dpc = (sum(deaths)) / e_pop, na.rm = TRUE) %>%
+  ungroup() %>%
+  mutate(statename = ifelse(statename == "Russia (Soviet Union)", "Russia", statename),
+         statename = ifelse(statename == "Burkina Faso (Upper Volta)", "Burkina Faso", statename),
+         statename = ifelse(statename == "Congo, Democratic Republic of (Zaire)", "DRC", statename),
+         statename = ifelse(statename == "Tanzania/Tanganyika", "Tanzania", statename),
+         statename = ifelse(statename == "Turkey (Ottoman Empire)", "Turkey", statename),
+         statename = ifelse(statename == "Myanmar (Burma)", "Myanmar", statename),
+         statename = ifelse(statename == "Iran (Persia)", "Iran", statename),
+         statename = ifelse(statename == "Central African Republic", "CAR", statename)) %>%
+  filter(year == 2018) %>%
+  # Filter India and Yemen Due to Missing Deaths Data
+  filter(!gwcode %in% c(678, 750)) %>%
+  # Create the Plot
+  ggplot(aes(x = dpc, y = reorder(factor(statename), dpc), fill = dpc)) +
+  geom_col() +
+  labs(
+    title = "Total Battle Deaths for Civil Conflicts Ongoing Up to 2019",
+    subtitle = "India and Yemen Excluded Due to Missing Deaths Data", 
+    x = "Battle Deaths Per 10,000 People (Civilian and Combatant)",
+    y = ""
+  ) +
+  scale_fill_viridis(option = "mako", end = 0.6, direction = -1) +
+  theme.forester() +
+  theme(legend.position = "none",
+        plot.subtitle = element_text(size = 10))
 
 ################################################################################
-################## Graph 6: Donut Plot of Civil War Outcomes ###################
+################## Graph 5: Donut Plot of Civil War Outcomes ###################
 ################################################################################
 
-################################################################################
-##### Graph 7: Time Series Plot of Conflict Intensity by Conflict Duration #####
-################################################################################
+# Re-Load the Conflict Termination Data
+term <- read_excel("Civil War/Data/ucdp-term-acd-3-2021 (4).xlsx")
+
+final %>%
+  filter(!is.na(outcome)) %>%
+  count(outcome) %>%
+  mutate(percentage = n / sum(n) * 100,
+         y.max = cumsum(percentage),
+         y.min = lag(y.max, default = 0)) %>%
+  ggplot(aes(ymax = y.max, ymin = y.min, xmax = 4, xmin = 3.55, fill = as.factor(outcome))) +
+  geom_rect() +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  scale_fill_viridis_d(option = "magma", end = 0.9, labels = c(
+    "Peace Agreement", "Ceasefire", "Government Victory", "Rebel Victory",
+    "Low Activity", "State Ceases to Exist"
+  )) +
+  labs(
+    title = "Distribution of Civil War Outcomes from 1950-2019",
+    fill = "Type of Outcome"
+  ) +
+  theme_void() +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"))
 
 ################################################################################
-################# Graph 8: Combined Charts of GDP per capita ###################
+##### Graph 6: Time Series Plot of Conflict Intensity by Conflict Duration #####
+################################################################################
+
+# Define a Custom Break Sequence for the Graph X-Axis
+custom.breaks <- c(1, seq(5, 70, by = 5))
+
+final %>%
+  filter(!is.na(civ.war)) %>%
+  group_by(gwcode) %>%
+  mutate(peace.fail = ifelse(row_number() == 1 & civ.war == 1, 1,
+                             ifelse(lag(civ.war == 0) & civ.war == 1, 1, 0))) %>%
+  mutate(id = cumsum(peace.fail)) %>%
+  filter(civ.war == 1) %>%
+  mutate(war.count = row_number()) %>%
+  ungroup() %>%
+  group_by(war.count) %>%
+  summarise(avg.deaths = mean(deaths, na.rm = T)) %>%
+  ungroup() %>%
+  ggplot(aes(x = war.count, y = avg.deaths)) +
+  geom_line(size = 1, color = "#1A4314") +
+  geom_smooth(aes(y = avg.deaths), method = "loess", se = FALSE, 
+              size = 1, color = "#B8D8AAFF", linetype = "dashed") +
+  scale_x_continuous(breaks = custom.breaks) +
+  labs(
+    title = "Average Battle-Related Deaths by Year of Active Civil Conflict",
+    x = "Years at Civil Conflict",
+    y = "Average Battle-Related Deaths Per 10,000 People"
+  ) +
+  theme.forester()
+
+################################################################################
+################# Graph 7: Combined Charts of GDP per capita ###################
 ################################################################################
 
 # Onset, Intensity, and Duration
 
 ################################################################################
-#################### Graph 9: Combined Charts of Democracy #####################
+#################### Graph 8: Combined Charts of Democracy #####################
 ################################################################################
 
 # Onset, Intensity, and Duration
 
 ################################################################################
-#################### Graph 10: Combined Charts of Geography #####################
+#################### Graph 9: Combined Charts of Geography #####################
 ################################################################################
 
 # Onset, Intensity, and Duration
 
 ################################################################################
-################### Graph 11: Combined Charts of Demography ####################
+################### Graph 10: Combined Charts of Demography ####################
 ################################################################################
 
 # Onset, Intensity, and Duration
