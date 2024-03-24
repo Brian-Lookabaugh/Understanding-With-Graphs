@@ -48,9 +48,7 @@ conflict <- conflict %>%
   # Re-Code NA Civil War Values to 0
   mutate(civ.war = ifelse(is.na(civ.war), 0, civ.war)) %>%
   # Keep Relevant Years
-  filter(year >= 1950 & year < 2021) %>%
-  # Add Rugged Terrain Data from the {peacesciencer} Package
-  add_rugged_terrain()
+  filter(year >= 1950 & year < 2021) 
 
 # Filter a Subset of V-Dem Data Before Merging
 vdem.filtered <- vdem %>%
@@ -65,7 +63,8 @@ vdem.filtered <- vdem %>%
     e_regionpol_7C, # 7 Region Categories
     e_gdppc, # GDP per Capita
     e_pop, # Population Size
-    e_miferrat # Fertility Rate
+    e_miferrat, # Fertility Rate
+    v2x_clphy # Physical Violence
   )
 
 # Merge The UCDP and V-Dem Data Together
@@ -140,7 +139,7 @@ merged <- left_join(merged, term, by = c("gwcode", "year"))
 # Clean Final Data Set
 final <- merged %>%
   # Filter Variables
-  select(-c("newlmtnest", "country_name")) %>%
+  select(-c("country_name")) %>%
   # Re-Code US Values to Civil War = 0
   mutate(civ.war = ifelse(gwcode == 2, 0, civ.war)) %>%
   # Filter People's Republic of Yemen
@@ -197,7 +196,8 @@ final <- final %>%
   group_by(gwcode) %>%
   mutate(onset = ifelse(civ.war == 1 & lag(civ.war) == 0, 1, 0),
          onset = if_else(row_number() == first(which(civ.war == 1)), 1, onset),
-         count.onset = cumsum(onset)) %>%
+         count.onset = cumsum(onset),
+         count.onset = ifelse(is.na(count.onset) & !is.na(civ.war), 0, count.onset)) %>%
   ungroup()
 
 # Load Map Data
@@ -256,9 +256,6 @@ map.data %>%
     plot.margin = unit(c(-1, -0.7, -1, -0.7), "cm"),
     plot.title = element_text(hjust = 0.5, face = "bold")
   ) 
-
-# Remove Maps Data Because It is Large
-rm(map.data, world.sf)
 
 ################################################################################
 ############## Graph 3: Bar Chart of Duration of Current Conflicts #############
@@ -402,25 +399,86 @@ final %>%
   theme.forester()
 
 ################################################################################
-################# Graph 7: Combined Charts of GDP per capita ###################
+############### Graph 7: GDP per capita and Civil War Frequency ################
 ################################################################################
 
-# Onset, Intensity, and Duration
+final %>%
+  group_by(count.onset) %>%
+  mutate(mean.gdp = mean(e_gdppc, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(x = count.onset, y = mean.gdp)) +
+  geom_point(size = 1.75) +
+  geom_smooth(method = "loess", se = FALSE, size = 1, color = "#22a884") +
+  labs(
+    title = "Economic Development and Civil Conflict Frequency (1950-2019)",
+    x = "Number of Civil Conflicts",
+    y = "Average GDP per capita",
+    fill = "Number of Countries"
+  ) +
+  scale_x_continuous(breaks = seq(0, 12, by = 1)) +
+  scale_y_continuous(breaks = seq(0, 14, by = 2)) +
+  theme.forester() 
 
 ################################################################################
-#################### Graph 8: Combined Charts of Democracy #####################
+################# Graph 8: Democracy and Civil War Frequency ###################
 ################################################################################
 
-# Onset, Intensity, and Duration
+final %>%
+  group_by(count.onset) %>%
+  mutate(mean.dem = mean(v2x_polyarchy, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(x = count.onset, y = mean.dem)) +
+  geom_point(size = 1.75) +
+  geom_smooth(method = "loess", se = FALSE, size = 1, color = "#2a788e") +
+  labs(
+    title = "Democracy and Civil Conflict Frequency (1950-2020)",
+    subtitle = "Index Ranges from 0 (Total Autocracy) to 1 (Total Democracy)",
+    x = "Number of Civil Conflicts",
+    y = "Average Electoral Democracy Index Score"
+  ) +
+  scale_x_continuous(breaks = seq(0, 12, by = 1)) +
+  scale_y_continuous(breaks = seq(0.2, 0.5, by = 0.05)) +
+  scale_fill_viridis(option = "mako", begin = 0.15) +
+  theme.forester()
 
 ################################################################################
-#################### Graph 9: Combined Charts of Geography #####################
+################# Graph 9: Repression and Civil War Frequency ##################
 ################################################################################
 
-# Onset, Intensity, and Duration
+final %>%
+  group_by(count.onset) %>%
+  mutate(mean.phy = mean(v2x_clphy, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(x = count.onset, y = mean.phy)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE, size = 1, color = "#414487") +
+  labs(
+    title = "Violent State Repression and Civil Conflict Frequency (1950-2020)",
+    subtitle = "The Physical Violence Index Measures the Degree to Which Individuals\nare Free From Political Killings and Torture By the Government",
+    x = "Number of Civil Conflicts",
+    y = "Average Freedom from Physical Violence Index Score"
+  ) +
+  scale_x_continuous(breaks = seq(0, 12, by = 1)) +
+  scale_y_continuous(breaks = seq(0.1, 1, by = 0.2)) +
+  theme.forester()
 
 ################################################################################
 ################### Graph 10: Combined Charts of Demography ####################
 ################################################################################
 
-# Onset, Intensity, and Duration
+final %>%
+  group_by(count.onset) %>%
+  mutate(mean.fer = mean(e_miferrat, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(x = count.onset, y = mean.fer)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE, size = 1, color = "#440154") +
+  labs(
+    title = "Fertility Rates and Civil Conflict Frequency (1950-2019)",
+    subtitle = "Fertility Rates Refer to the Average Number of Children 1 Woman\nIs Expected to Have In Her Lifetime",
+    x = "Number of Civil Conflicts",
+    y = "Average Fertility Rate"
+  ) +
+  scale_x_continuous(breaks = seq(0, 12, by = 1)) +
+  scale_y_continuous(breaks = seq(3.5, 7, by = 0.5)) +
+  theme.forester()
